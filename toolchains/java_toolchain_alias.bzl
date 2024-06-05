@@ -14,6 +14,8 @@
 
 """Experimental re-implementations of Java toolchain aliases using toolchain resolution."""
 
+load("//java/common:java_common.bzl", "java_common")
+
 def _java_runtime_alias(ctx):
     """An experimental implementation of java_runtime_alias using toolchain resolution."""
     toolchain_info = ctx.toolchains["@bazel_tools//tools/jdk:runtime_toolchain_type"]
@@ -35,7 +37,6 @@ def _java_runtime_alias(ctx):
 java_runtime_alias = rule(
     implementation = _java_runtime_alias,
     toolchains = ["@bazel_tools//tools/jdk:runtime_toolchain_type"],
-    incompatible_use_toolchain_transition = True,
 )
 
 def _java_host_runtime_alias(ctx):
@@ -82,12 +83,8 @@ _java_runtime_transition = transition(
 java_runtime_version_alias = rule(
     implementation = _java_runtime_alias,
     toolchains = ["@bazel_tools//tools/jdk:runtime_toolchain_type"],
-    incompatible_use_toolchain_transition = True,
     attrs = {
         "runtime_version": attr.string(mandatory = True),
-        "_allowlist_function_transition": attr.label(
-            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
-        ),
     },
     cfg = _java_runtime_transition,
 )
@@ -97,18 +94,12 @@ def _java_toolchain_alias(ctx):
     toolchain_info = ctx.toolchains["@bazel_tools//tools/jdk:toolchain_type"]
     toolchain = toolchain_info.java
 
-    # buildifier: disable=rule-impl-return
-    return struct(
-        providers = [
-            toolchain_info,
-            toolchain,
-        ],
-        # Use the legacy provider syntax for compatibility with the native rules.
-        java_toolchain = toolchain,
-    )
+    return [
+        toolchain_info,
+        toolchain,
+    ]
 
 java_toolchain_alias = rule(
     implementation = _java_toolchain_alias,
     toolchains = ["@bazel_tools//tools/jdk:toolchain_type"],
-    incompatible_use_toolchain_transition = True,
 )
