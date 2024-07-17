@@ -13,13 +13,28 @@
 # limitations under the License.
 """Module extensions for rules_java."""
 
-load("//java:repositories.bzl", "java_tools_repos", "local_jdk_repo", "remote_jdk11_repos", "remote_jdk17_repos", "remote_jdk20_repos")
+load("@bazel_features//:features.bzl", "bazel_features")
+load(
+    "//java:repositories.bzl",
+    "java_tools_repos",
+    "local_jdk_repo",
+    "remote_jdk11_repos",
+    "remote_jdk17_repos",
+    "remote_jdk21_repos",
+    "remote_jdk8_repos",
+)
 
-def _toolchains_impl(_ctx):
+def _toolchains_impl(module_ctx):
     java_tools_repos()
     local_jdk_repo()
+    remote_jdk8_repos()
     remote_jdk11_repos()
     remote_jdk17_repos()
-    remote_jdk20_repos()
+    remote_jdk21_repos()
 
-toolchains = module_extension(implementation = _toolchains_impl)
+    if bazel_features.external_deps.extension_metadata_has_reproducible:
+        return module_ctx.extension_metadata(reproducible = True)
+    else:
+        return None
+
+toolchains = module_extension(_toolchains_impl)
