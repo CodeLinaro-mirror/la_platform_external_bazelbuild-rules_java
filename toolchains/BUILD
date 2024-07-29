@@ -1,3 +1,4 @@
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load(
     ":default_java_toolchain.bzl",
@@ -29,13 +30,44 @@ filegroup(
     srcs = glob(["*.bzl"]),
 )
 
-# Used to distinguish toolchains used for Java development, ie the JavaToolchainProvider.
+# A single binary distribution of a JDK (e.g., OpenJDK 17 for Windows arm64) provides three
+# different types of toolchains from the perspective of Bazel:
+
+# The compilation toolchain, which provides the Java runtime used to execute the Java compiler, as
+# well as various helper tools and settings.
+#
+# Toolchains of this type typically have constraints on the execution platform so that their Java
+# runtime can run the compiler, but not on the target platform as Java compilation outputs are
+# platform independent.
+#
+# Obtain the associated JavaToolchainInfo via:
+#   ctx.toolchains["@bazel_tools//tools/jdk:toolchain_type"].java
 # TODO: migrate away from using @bazel_tools//tools/jdk:toolchain_type ?
 # toolchain_type(name = "toolchain_type")
 
-# Used to distinguish toolchains used for Java execution, ie the JavaRuntimeInfo.
+# The Java runtime that executable Java compilation outputs (e.g., java_binary with
+# create_executable = True) will run on.
+#
+# Toolchains of this type typically have constraints on the target platform so that the runtime's
+# native 'java' binary can be run there, but not on the execution platform as building an executable
+# Java target only requires copying or symlinking the runtime, which can be done on any platform.
+#
+# Obtain the associated JavaRuntimeInfo via:
+#   ctx.toolchains["@bazel_tools//tools/jdk:runtime_toolchain_type"].java_runtime
 # TODO: migrate away from using @bazel_tools//tools/jdk:runtime_toolchain_type ?
 # toolchain_type(name = "runtime_toolchain_type")
+
+# The Java runtime to extract the bootclasspath from that is then used to compile Java sources.
+#
+# As the bootclasspath is platform independent, toolchains of this type may have no constraints.
+# Purely as an optimization to prevent unnecessary fetches of remote runtimes for other
+# architectures, toolchains of this type may have constraints on the execution platform that match
+# those on the corresponding compilation toolchain.
+#
+# Toolchains of this type are only consumed internally by the bootclasspath rule and should not be
+# accessed from Starlark.
+# TODO: migrate away from using @bazel_tools//tools/jdk:bootstrap_runtime_toolchain_type ?
+# toolchain_type(name = "bootstrap_runtime_toolchain_type")
 
 # Points to toolchain[":runtime_toolchain_type"] (was :legacy_current_java_runtime)
 java_runtime_alias(name = "current_java_runtime")
@@ -128,6 +160,10 @@ cc_library(
             actual = "@remote_java_tools_%s//:prebuilt_singlejar" % OS,
             visibility = ["//visibility:private"],
         ),
+        alias(
+            name = "turbine_direct_graal_%s" % OS,
+            actual = "@remote_java_tools_%s//:turbine_direct_graal" % OS,
+        ),
     )
     for OS in [
         "linux",
@@ -137,9 +173,6 @@ cc_library(
     ]
 ]
 
-# On Windows, executables end in ".exe", but the label we reach it through
-# must be platform-independent. Thus, we create a little filegroup that
-# contains the appropriate platform-dependent file.
 alias(
     name = "ijar",
     actual = ":ijar_prebuilt_binary_or_cc_binary",
@@ -166,12 +199,6 @@ alias(
     }),
 )
 
-# On Windows, Java implementation of singlejar is used. We create a little
-# filegroup that contains the appropriate platform-dependent file.
-# Once https://github.com/bazelbuild/bazel/issues/2241 is fixed (that is,
-# the native singlejar is used on windows), this file group can be reused since
-# on Windows, executables end in ".exe", but the label we reach it through
-# must be platform-independent.
 alias(
     name = "singlejar",
     actual = ":singlejar_prebuilt_or_cc_binary",
@@ -198,11 +225,36 @@ alias(
     }),
 )
 
+alias(
+    name = "turbine_direct",
+    actual = ":turbine_direct_graal_or_java",
+)
+
+alias(
+    name = "turbine_direct_graal_or_java",
+    actual = select({
+        "@bazel_tools//src/conditions:darwin_arm64": ":turbine_direct_graal_darwin_arm64",
+        "@bazel_tools//src/conditions:darwin_x86_64": ":turbine_direct_graal_darwin_x86_64",
+        "@bazel_tools//src/conditions:linux_x86_64": ":turbine_direct_graal_linux",
+        "@bazel_tools//src/conditions:windows": ":turbine_direct_graal_windows",
+        "//conditions:default": "@remote_java_tools//:TurbineDirect",
+    }),
+)
+
+alias(
+    name = "turbine_direct_graal",
+    actual = select({
+        "@bazel_tools//src/conditions:darwin_arm64": ":turbine_direct_graal_darwin_arm64",
+        "@bazel_tools//src/conditions:darwin_x86_64": ":turbine_direct_graal_darwin_x86_64",
+        "@bazel_tools//src/conditions:linux_x86_64": ":turbine_direct_graal_linux",
+        "@bazel_tools//src/conditions:windows": ":turbine_direct_graal_windows",
+    }),
+)
+
 bootclasspath(
     name = "platformclasspath",
     src = "DumpPlatformClassPath.java",
-    host_javabase = ":current_java_runtime",
-    target_javabase = ":current_java_runtime",
+    java_runtime_alias = ":current_java_runtime",
 )
 
 default_java_toolchain(
@@ -216,62 +268,17 @@ alias(
     actual = ":toolchain",
 )
 
-RELEASES = (8, 9, 10, 11)
+RELEASES = (8, 9, 10, 11, 17, 21)
 
 [
     default_java_toolchain(
-        name = "toolchain_java%d" % release,
+        name = ("toolchain_java%d" if release <= 11 else "toolchain_jdk_%d") % release,
         configuration = DEFAULT_TOOLCHAIN_CONFIGURATION,
         source_version = "%s" % release,
         target_version = "%s" % release,
     )
     for release in RELEASES
 ]
-
-# A toolchain that targets java 14.
-default_java_toolchain(
-    name = "toolchain_jdk_14",
-    configuration = dict(),
-    java_runtime = "//toolchains:remotejdk_14",
-    source_version = "14",
-    target_version = "14",
-)
-
-# A toolchain that targets java 15.
-default_java_toolchain(
-    name = "toolchain_jdk_15",
-    configuration = dict(),
-    java_runtime = "//toolchains:remotejdk_15",
-    source_version = "15",
-    target_version = "15",
-)
-
-# A toolchain that targets java 16.
-default_java_toolchain(
-    name = "toolchain_jdk_16",
-    configuration = dict(),
-    java_runtime = "//toolchains:remotejdk_16",
-    source_version = "16",
-    target_version = "16",
-)
-
-# A toolchain that targets java 17.
-default_java_toolchain(
-    name = "toolchain_jdk_17",
-    configuration = dict(),
-    java_runtime = "//toolchains:remotejdk_17",
-    source_version = "17",
-    target_version = "17",
-)
-
-# A toolchain that targets java 20.
-default_java_toolchain(
-    name = "toolchain_jdk_20",
-    configuration = dict(),
-    java_runtime = "//toolchains:remotejdk_20",
-    source_version = "20",
-    target_version = "20",
-)
 
 default_java_toolchain(
     name = "prebuilt_toolchain",
@@ -305,8 +312,8 @@ java_runtime_version_alias(
 )
 
 java_runtime_version_alias(
-    name = "remotejdk_20",
-    runtime_version = "remotejdk_20",
+    name = "remotejdk_21",
+    runtime_version = "remotejdk_21",
     visibility = ["//visibility:public"],
 )
 
@@ -314,4 +321,11 @@ java_runtime_version_alias(
     name = "jdk_8",
     runtime_version = "8",
     visibility = ["//visibility:public"],
+)
+
+bzl_library(
+    name = "toolchain_utils",
+    srcs = ["toolchain_utils.bzl"],
+    visibility = ["//visibility:public"],
+    deps = ["//java/common"],
 )
