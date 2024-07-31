@@ -1,3 +1,4 @@
 include platform/build/bazel:/OWNERS
+include kernel/build:/OWNERS
 jobredeaux@google.com
 agespino@google.com
