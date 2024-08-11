@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Rules for importing and registering a local JDK."""
+"""Rules for importing a local JDK."""
 
 load("//java:defs.bzl", "java_runtime")
 load(":default_java_toolchain.bzl", "default_java_toolchain")
@@ -57,9 +57,13 @@ def local_java_runtime(name, java_home, version, runtime_name = None, visibility
       runtime_name: name of java_runtime target if it already exists.
       visibility: Visibility that will be applied to the java runtime target
       exec_compatible_with: A list of constraint values that must be
-                            satisfied for the exec platform.
+                            satisfied by the exec platform for the Java compile
+                            toolchain to be selected. They must be satisfied by
+                            the target platform for the Java runtime toolchain
+                            to be selected.
       target_compatible_with: A list of constraint values that must be
-                              satisfied for the target platform.
+                              satisfied by the target platform for the Java
+                              compile toolchain to be selected.
     """
 
     if runtime_name == None:
@@ -97,8 +101,16 @@ def local_java_runtime(name, java_home, version, runtime_name = None, visibility
     )
     native.toolchain(
         name = "runtime_toolchain_definition",
+        # A JDK can be used as a runtime *for* the platforms it can be used to compile *on*.
+        target_compatible_with = exec_compatible_with,
         target_settings = [":%s_settings_alias" % name],
         toolchain_type = Label("@bazel_tools//tools/jdk:runtime_toolchain_type"),
+        toolchain = runtime_name,
+    )
+    native.toolchain(
+        name = "bootstrap_runtime_toolchain_definition",
+        target_settings = [":%s_settings_alias" % name],
+        toolchain_type = Label("@bazel_tools//tools/jdk:bootstrap_runtime_toolchain_type"),
         toolchain = runtime_name,
     )
 
@@ -179,19 +191,28 @@ def _local_java_repository_impl(repository_ctx):
 
     if not java_bin.exists:
         # Java binary does not exist
-        repository_ctx.file(
-            "BUILD.bazel",
-            _NOJDK_BUILD_TPL.format(
-                local_jdk = local_java_runtime_name,
-                java_binary = _with_os_extension(repository_ctx, "bin/java"),
-                java_home = java_home,
-            ),
-            False,
+        _create_auto_config_error_build_file(
+            repository_ctx,
+            local_java_runtime_name = local_java_runtime_name,
+            java_home = java_home,
+            message = "Cannot find Java binary {java_binary} in {java_home}; " +
+                      "either correct your JAVA_HOME, PATH or specify Java from " +
+                      "remote repository (e.g. --java_runtime_version=remotejdk_11)",
         )
         return
 
     # Detect version
     version = repository_ctx.attr.version if repository_ctx.attr.version != "" else _detect_java_version(repository_ctx, java_bin)
+    if version == None:
+        # Java version could not be detected
+        _create_auto_config_error_build_file(
+            repository_ctx,
+            local_java_runtime_name = local_java_runtime_name,
+            java_home = java_home,
+            message = "Cannot detect Java version of {java_binary} in {java_home}; " +
+                      "make sure it points to a valid Java executable",
+        )
+        return
 
     # Prepare BUILD file using "local_java_runtime" macro
     if repository_ctx.attr.build_file_content and repository_ctx.attr.build_file:
@@ -211,12 +232,14 @@ local_java_runtime(
     runtime_name = %s,
     java_home = "%s",
     version = "%s",
+    exec_compatible_with = HOST_CONSTRAINTS,
 )
 """ % (local_java_runtime_name, runtime_name, java_home, version)
 
     repository_ctx.file(
         "BUILD.bazel",
         'load("@rules_java//toolchains:local_java_repository.bzl", "local_java_runtime")\n' +
+        'load("@local_config_platform//:constraints.bzl", "HOST_CONSTRAINTS")\n' +
         build_file +
         local_java_runtime_macro,
     )
@@ -225,14 +248,12 @@ local_java_runtime(
     for file in repository_ctx.path(java_home).readdir():
         repository_ctx.symlink(file, file.basename)
 
-# Build file template, when JDK does not exist
-_NOJDK_BUILD_TPL = '''load("@rules_java//toolchains:fail_rule.bzl", "fail_rule")
+# Build file template, when JDK could not be detected
+_AUTO_CONFIG_ERROR_BUILD_TPL = '''load("@rules_java//toolchains:fail_rule.bzl", "fail_rule")
 fail_rule(
    name = "jdk",
    header = "Auto-Configuration Error:",
-   message = ("Cannot find Java binary {java_binary} in {java_home}; either correct your JAVA_HOME, " +
-          "PATH or specify Java from remote repository (e.g. " +
-          "--java_runtime_version=remotejdk_11)")
+   message = {message},
 )
 config_setting(
    name = "localjdk_setting",
@@ -245,7 +266,26 @@ toolchain(
    toolchain_type = "@bazel_tools//tools/jdk:runtime_toolchain_type",
    toolchain = ":jdk",
 )
+toolchain(
+   name = "bootstrap_runtime_toolchain_definition",
+   target_settings = [":localjdk_setting"],
+   toolchain_type = "@bazel_tools//tools/jdk:bootstrap_runtime_toolchain_type",
+   toolchain = ":jdk",
+)
 '''
+
+def _create_auto_config_error_build_file(repository_ctx, *, local_java_runtime_name, java_home, message):
+    repository_ctx.file(
+        "BUILD.bazel",
+        _AUTO_CONFIG_ERROR_BUILD_TPL.format(
+            local_jdk = local_java_runtime_name,
+            message = repr(message.format(
+                java_binary = _with_os_extension(repository_ctx, "bin/java"),
+                java_home = java_home,
+            )),
+        ),
+        False,
+    )
 
 _local_java_repository_rule = repository_rule(
     implementation = _local_java_repository_impl,
@@ -261,7 +301,19 @@ _local_java_repository_rule = repository_rule(
 )
 
 def local_java_repository(name, java_home = "", version = "", build_file = None, build_file_content = None, **kwargs):
-    """Registers a runtime toolchain for local JDK and creates an unregistered compile toolchain.
+    """Defines runtime and compile toolchains for a local JDK.
+
+    Register the toolchains defined by this macro as follows (where `<name>` is the value of the
+    `name` parameter):
+    * Runtime toolchains only (recommended)
+      ```
+      register_toolchains("@<name>//:runtime_toolchain_definition")
+      register_toolchains("@<name>//:bootstrap_runtime_toolchain_definition")
+      ```
+    * Runtime and compilation toolchains:
+      ```
+      register_toolchains("@<name>//:all")
+      ```
 
     Toolchain resolution is constrained with --java_runtime_version flag
     having value of the "name" or "version" parameter.
