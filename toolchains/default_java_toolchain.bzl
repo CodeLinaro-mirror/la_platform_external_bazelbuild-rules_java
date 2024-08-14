@@ -15,6 +15,7 @@
 """Rules for defining default_java_toolchain"""
 
 load("//java:defs.bzl", "java_toolchain")
+load("//java/common:java_common.bzl", "java_common")
 
 # JVM options, without patching java.compiler and jdk.compiler modules.
 BASE_JDK9_JVM_OPTS = [
@@ -64,6 +65,7 @@ DEFAULT_JAVACOPTS = [
     "-Xep:EmptyTopLevelDeclaration:OFF",
     "-Xep:LenientFormatStringValidation:OFF",
     "-Xep:ReturnMissingNullable:OFF",
+    "-Xep:UseCorrectAssertInTests:OFF",
 ]
 
 # Default java_toolchain parameters
@@ -71,7 +73,7 @@ _BASE_TOOLCHAIN_CONFIGURATION = dict(
     forcibly_disable_header_compilation = False,
     genclass = [Label("@remote_java_tools//:GenClass")],
     header_compiler = [Label("@remote_java_tools//:TurbineDirect")],
-    header_compiler_direct = [Label("@remote_java_tools//:TurbineDirect")],
+    header_compiler_direct = [Label("//toolchains:turbine_direct")],
     ijar = [Label("//toolchains:ijar")],
     javabuilder = [Label("@remote_java_tools//:JavaBuilder")],
     javac_supports_workers = True,
@@ -91,7 +93,7 @@ _BASE_TOOLCHAIN_CONFIGURATION = dict(
     reduced_classpath_incompatible_processors = [
         "dagger.hilt.processor.internal.root.RootProcessor",  # see b/21307381
     ],
-    java_runtime = Label("//toolchains:remotejdk_17"),
+    java_runtime = Label("//toolchains:remotejdk_21"),
 )
 
 DEFAULT_TOOLCHAIN_CONFIGURATION = _BASE_TOOLCHAIN_CONFIGURATION
@@ -129,8 +131,11 @@ PREBUILT_TOOLCHAIN_CONFIGURATION = dict(
 NONPREBUILT_TOOLCHAIN_CONFIGURATION = dict(
     ijar = [Label("@remote_java_tools//:ijar_cc_binary")],
     singlejar = [Label("@remote_java_tools//:singlejar_cc_bin")],
+    header_compiler_direct = [Label("@remote_java_tools//:TurbineDirect")],
 )
 
+# If this is changed, the docs for "{,tool_}java_language_version" also
+# need to be updated in the Bazel user manual
 _DEFAULT_SOURCE_VERSION = "8"
 
 def default_java_toolchain(name, configuration = DEFAULT_TOOLCHAIN_CONFIGURATION, toolchain_definition = True, exec_compatible_with = [], target_compatible_with = [], **kwargs):
@@ -203,8 +208,14 @@ def java_runtime_files(name, srcs):
             tags = ["manual"],
         )
 
+_JAVA_BOOTSTRAP_RUNTIME_TOOLCHAIN_TYPE = Label("@bazel_tools//tools/jdk:bootstrap_runtime_toolchain_type")
+
+# Opt the Java bootstrap actions into path mapping:
+# https://github.com/bazelbuild/bazel/commit/a239ea84832f18ee8706682145e9595e71b39680
+_SUPPORTS_PATH_MAPPING = {"supports-path-mapping": "1"}
+
 def _bootclasspath_impl(ctx):
-    host_javabase = ctx.attr.host_javabase[java_common.JavaRuntimeInfo]
+    exec_javabase = ctx.attr.java_runtime_alias[java_common.JavaRuntimeInfo]
 
     class_dir = ctx.actions.declare_directory("%s_classes" % ctx.label.name)
 
@@ -214,24 +225,25 @@ def _bootclasspath_impl(ctx):
     args.add("-target")
     args.add("8")
     args.add("-Xlint:-options")
+    args.add("-J-XX:-UsePerfData")
     args.add("-d")
     args.add_all([class_dir], expand_directories = False)
     args.add(ctx.file.src)
 
     ctx.actions.run(
-        executable = "%s/bin/javac" % host_javabase.java_home,
+        executable = "%s/bin/javac" % exec_javabase.java_home,
         mnemonic = "JavaToolchainCompileClasses",
-        inputs = [ctx.file.src] + ctx.files.host_javabase,
+        inputs = [ctx.file.src] + ctx.files.java_runtime_alias,
         outputs = [class_dir],
         arguments = [args],
+        execution_requirements = _SUPPORTS_PATH_MAPPING,
     )
 
     bootclasspath = ctx.outputs.output_jar
 
-    inputs = [class_dir] + ctx.files.host_javabase
-
     args = ctx.actions.args()
     args.add("-XX:+IgnoreUnrecognizedVMOptions")
+    args.add("-XX:-UsePerfData")
     args.add("--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED")
     args.add("--add-exports=jdk.compiler/com.sun.tools.javac.platform=ALL-UNNAMED")
     args.add("--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED")
@@ -239,20 +251,22 @@ def _bootclasspath_impl(ctx):
     args.add("DumpPlatformClassPath")
     args.add(bootclasspath)
 
+    any_javabase = ctx.toolchains[_JAVA_BOOTSTRAP_RUNTIME_TOOLCHAIN_TYPE].java_runtime
+    args.add(any_javabase.java_home)
+
     system_files = ("release", "modules", "jrt-fs.jar")
-    system = [f for f in ctx.files.target_javabase if f.basename in system_files]
+    system = [f for f in any_javabase.files.to_list() if f.basename in system_files]
     if len(system) != len(system_files):
         system = None
-    if ctx.attr.target_javabase:
-        inputs.extend(ctx.files.target_javabase)
-        args.add(ctx.attr.target_javabase[java_common.JavaRuntimeInfo].java_home)
 
+    inputs = depset([class_dir] + ctx.files.java_runtime_alias, transitive = [any_javabase.files])
     ctx.actions.run(
-        executable = str(host_javabase.java_executable_exec_path),
+        executable = str(exec_javabase.java_executable_exec_path),
         mnemonic = "JavaToolchainCompileBootClasspath",
         inputs = inputs,
         outputs = [bootclasspath],
         arguments = [args],
+        execution_requirements = _SUPPORTS_PATH_MAPPING,
     )
     return [
         DefaultInfo(files = depset([bootclasspath])),
@@ -266,7 +280,7 @@ def _bootclasspath_impl(ctx):
 _bootclasspath = rule(
     implementation = _bootclasspath_impl,
     attrs = {
-        "host_javabase": attr.label(
+        "java_runtime_alias": attr.label(
             cfg = "exec",
             providers = [java_common.JavaRuntimeInfo],
         ),
@@ -275,10 +289,8 @@ _bootclasspath = rule(
             cfg = "exec",
             allow_single_file = True,
         ),
-        "target_javabase": attr.label(
-            providers = [java_common.JavaRuntimeInfo],
-        ),
     },
+    toolchains = [_JAVA_BOOTSTRAP_RUNTIME_TOOLCHAIN_TYPE],
 )
 
 def bootclasspath(name, **kwargs):
