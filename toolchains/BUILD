@@ -1,10 +1,15 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
-load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_setting")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load(
+    ":bootclasspath.bzl",
+    "bootclasspath",
+    "language_version_bootstrap_runtime",
+)
 load(
     ":default_java_toolchain.bzl",
     "DEFAULT_TOOLCHAIN_CONFIGURATION",
     "PREBUILT_TOOLCHAIN_CONFIGURATION",
-    "bootclasspath",
     "default_java_toolchain",
     "java_runtime_files",
 )
@@ -15,6 +20,7 @@ load(
     "java_runtime_version_alias",
     "java_toolchain_alias",
 )
+load(":utf8_environment.bzl", "utf8_environment")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -28,6 +34,15 @@ filegroup(
 filegroup(
     name = "bzl_srcs",
     srcs = glob(["*.bzl"]),
+)
+
+# If enabled, the bootclasspath for Java compilation will be extracted from a Java runtime matching
+# the version specified with `--java_language_version` rather than the runtime specified with
+# `--java_runtime_version`.
+bool_flag(
+    name = "incompatible_language_version_bootclasspath",
+    build_setting_default = False,
+    visibility = ["//visibility:private"],
 )
 
 # A single binary distribution of a JDK (e.g., OpenJDK 17 for Windows arm64) provides three
@@ -136,9 +151,9 @@ cc_library(
         "@bazel_tools//src/conditions:darwin": ["include/darwin"],
         "@bazel_tools//src/conditions:freebsd": ["include/freebsd"],
         "@bazel_tools//src/conditions:linux_aarch64": ["include/linux"],
-        "@bazel_tools//src/conditions:linux_mips64": [":include/linux"],
+        "@bazel_tools//src/conditions:linux_mips64": ["include/linux"],
         "@bazel_tools//src/conditions:linux_ppc64le": ["include/linux"],
-        "@bazel_tools//src/conditions:linux_riscv64": [":include/linux"],
+        "@bazel_tools//src/conditions:linux_riscv64": ["include/linux"],
         "@bazel_tools//src/conditions:linux_s390x": ["include/linux"],
         "@bazel_tools//src/conditions:linux_x86_64": ["include/linux"],
         "@bazel_tools//src/conditions:openbsd": ["include/openbsd"],
@@ -158,6 +173,11 @@ cc_library(
         alias(
             name = "prebuilt_singlejar_%s" % OS,
             actual = "@remote_java_tools_%s//:prebuilt_singlejar" % OS,
+            visibility = ["//visibility:private"],
+        ),
+        alias(
+            name = "prebuilt_one_version_%s" % OS,
+            actual = "@remote_java_tools_%s//:prebuilt_one_version" % OS,
             visibility = ["//visibility:private"],
         ),
         alias(
@@ -226,6 +246,32 @@ alias(
 )
 
 alias(
+    name = "one_version",
+    actual = ":one_version_prebuilt_or_cc_binary",
+)
+
+alias(
+    name = "one_version_prebuilt_or_cc_binary",
+    actual = select({
+        "@bazel_tools//src/conditions:darwin_arm64": ":prebuilt_one_version_darwin_arm64",
+        "@bazel_tools//src/conditions:darwin_x86_64": ":prebuilt_one_version_darwin_x86_64",
+        "@bazel_tools//src/conditions:linux_x86_64": ":prebuilt_one_version_linux",
+        "@bazel_tools//src/conditions:windows": ":prebuilt_one_version_windows",
+        "//conditions:default": "@remote_java_tools//:one_version_cc_bin",
+    }),
+)
+
+alias(
+    name = "prebuilt_one_version",
+    actual = select({
+        "@bazel_tools//src/conditions:darwin_arm64": ":prebuilt_one_version_darwin_arm64",
+        "@bazel_tools//src/conditions:darwin_x86_64": ":prebuilt_one_version_darwin_x86_64",
+        "@bazel_tools//src/conditions:linux_x86_64": ":prebuilt_one_version_linux",
+        "@bazel_tools//src/conditions:windows": ":prebuilt_one_version_windows",
+    }),
+)
+
+alias(
     name = "turbine_direct",
     actual = ":turbine_direct_graal_or_java",
 )
@@ -251,10 +297,46 @@ alias(
     }),
 )
 
+string_setting(
+    name = "java_language_version",
+    build_setting_default = "",
+    visibility = ["//visibility:private"],
+)
+
+string_setting(
+    name = "java_runtime_version",
+    build_setting_default = "",
+    visibility = ["//visibility:private"],
+)
+
+language_version_bootstrap_runtime(
+    name = "language_version_bootstrap_runtime",
+    java_language_version = ":java_language_version",
+    java_runtime_version = ":java_runtime_version",
+    visibility = ["//visibility:private"],
+)
+
+utf8_environment(
+    name = "utf8_environment",
+    visibility = ["//visibility:private"],
+)
+
+config_setting(
+    name = "incompatible_language_version_bootclasspath_enabled",
+    flag_values = {
+        ":incompatible_language_version_bootclasspath": "True",
+    },
+    visibility = ["//visibility:private"],
+)
+
 bootclasspath(
     name = "platformclasspath",
     src = "DumpPlatformClassPath.java",
     java_runtime_alias = ":current_java_runtime",
+    language_version_bootstrap_runtime = select({
+        ":incompatible_language_version_bootclasspath_enabled": ":language_version_bootstrap_runtime",
+        "//conditions:default": None,
+    }),
 )
 
 default_java_toolchain(
@@ -290,18 +372,6 @@ default_java_toolchain(
 java_runtime_version_alias(
     name = "remote_jdk11",
     runtime_version = "remotejdk_11",
-    visibility = ["//visibility:public"],
-)
-
-java_runtime_version_alias(
-    name = "remotejdk_15",
-    runtime_version = "remotejdk_15",
-    visibility = ["//visibility:public"],
-)
-
-java_runtime_version_alias(
-    name = "remotejdk_16",
-    runtime_version = "remotejdk_16",
     visibility = ["//visibility:public"],
 )
 
