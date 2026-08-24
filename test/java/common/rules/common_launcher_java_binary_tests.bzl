@@ -1,5 +1,6 @@
 """Parameterized tests for java_binary with --java_launcher"""
 
+load("@bazel_features//:features.bzl", "bazel_features")
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_testing//lib:analysis_test.bzl", "analysis_test", "test_suite")
@@ -10,6 +11,8 @@ load("//java:java_test.bzl", "java_test")
 load("//java/common/rules:java_helper.bzl", "helper")
 load("//test/java/testutil:artifact_closure.bzl", "artifact_closure")
 load("//test/java/testutil:binary_executable_subject.bzl", "expect_that_executable")
+load("//test/java/testutil:helper.bzl", "always_passes")
+load("//test/java/testutil:javac_action_subject.bzl", "javac_action_subject")
 load("//test/java/testutil:mock_java_toolchain.bzl", "mock_java_toolchain")
 
 def _test_java_binary_non_executable_rule_outputs(name):
@@ -316,6 +319,79 @@ def _test_java_test_inner_class_impl(env, target):
         expected = "'Outer$Inner'"  # shell-quoted
     expect_that_executable.of_target(env, target).test_suite().equals(expected)
 
+def _test_java_binary_strict_java_deps_flag(name):
+    if not bazel_features.rules.analysis_tests_can_transition_on_experimental_incompatible_flags:
+        always_passes(name)
+        return
+
+    util.helper_target(
+        java_binary,
+        name = name + "/app",
+        srcs = ["App.java"],
+        deps = [
+            name + "/alpha",
+            name + "/bravo",
+        ],
+    )
+    util.helper_target(
+        java_library,
+        name = name + "/alpha",
+        srcs = ["Alpha.java"],
+    )
+    util.helper_target(
+        java_library,
+        name = name + "/bravo",
+        srcs = ["Bravo.java"],
+        exports = [name + "/delta"],
+        deps = [name + "/charlie"],
+    )
+    util.helper_target(
+        java_library,
+        name = name + "/charlie",
+        srcs = ["Charlie.java"],
+    )
+    util.helper_target(
+        java_library,
+        name = name + "/delta",
+        srcs = ["Delta.java"],
+    )
+
+    analysis_test(
+        name = name,
+        attrs = {
+            "off": {"@config_settings": {"//command_line_option:experimental_strict_java_deps": "OFF"}},
+            "warn": {"@config_settings": {"//command_line_option:experimental_strict_java_deps": "WARN"}},
+            "error": {"@config_settings": {"//command_line_option:experimental_strict_java_deps": "ERROR"}},
+            "strict": {"@config_settings": {"//command_line_option:experimental_strict_java_deps": "STRICT"}},
+        },
+        impl = _test_java_binary_strict_java_deps_flag_impl,
+        targets = {
+            "off": name + "/app",
+            "warn": name + "/app",
+            "error": name + "/app",
+            "strict": name + "/app",
+        },
+    )
+
+def _test_java_binary_strict_java_deps_flag_impl(env, targets):
+    # off
+    assert_that_javac = javac_action_subject.of(env, targets.off, desc = "off")
+    assert_that_javac.direct_dependencies().contains_exactly([])
+    assert_that_javac.strict_java_deps().equals("OFF")
+
+    for mode, target, expected_flag_value in [
+        ("WARN", targets.warn, "WARN"),
+        ("ERROR", targets.error, "ERROR"),
+        ("STRICT", targets.strict, "ERROR"),
+    ]:
+        assert_that_javac = javac_action_subject.of(env, target, desc = "mode=" + mode)
+        assert_that_javac.strict_java_deps().equals(expected_flag_value)
+        assert_that_javac.direct_dependencies().contains_exactly([
+            "{bindir}/{package}/lib{test_name}/alpha-hjar.jar",
+            "{bindir}/{package}/lib{test_name}/bravo-hjar.jar",
+            "{bindir}/{package}/lib{test_name}/delta-hjar.jar",
+        ]).in_order()
+
 def java_binary_launcher_tests(name):
     test_suite(
         name = name,
@@ -332,5 +408,6 @@ def java_binary_launcher_tests(name):
             _test_java_binary_native_library_path_includes_transitive_deps,
             _test_java_binary_inner_class,
             _test_java_test_inner_class,
+            _test_java_binary_strict_java_deps_flag,
         ],
     )
