@@ -37,7 +37,8 @@ def _single_jar_inputs(deps, deploy_env):
                     fail("unexpected file type in java_single_jar.deps: %s" % f.path)
                 files.append(f)
             transitive_inputs.append(depset(files))
-    inputs = depset(transitive = transitive_inputs)
+    all_inputs = depset(transitive = transitive_inputs)
+    inputs = all_inputs
 
     if hasattr(java_common, "JavaRuntimeClasspathInfo"):
         deploy_env_jars = depset(transitive = [
@@ -47,15 +48,15 @@ def _single_jar_inputs(deps, deploy_env):
         excluded_jars = {jar: None for jar in deploy_env_jars.to_list()}
         if excluded_jars:
             inputs = depset([jar for jar in inputs.to_list() if jar not in excluded_jars])
-    return inputs
+    return inputs, all_inputs
 
 def _bazel_java_single_jar_impl(ctx):
-    inputs = _single_jar_inputs(ctx.attr.deps, ctx.attr.deploy_env)
+    inputs, all_inputs = _single_jar_inputs(ctx.attr.deps, ctx.attr.deploy_env)
 
     args = ctx.actions.args()
     args.add_all("--sources", inputs)
     args.use_param_file("@%s")
-    args.set_param_file_format("multiline")
+    args.set_param_file_format("shell")
     args.add_all("--deploy_manifest_lines", ctx.attr.deploy_manifest_lines)
     args.add("--output", ctx.outputs.output)
     args.add("--normalize")
@@ -102,7 +103,7 @@ def _bazel_java_single_jar_impl(ctx):
         runfiles = ctx.runfiles(transitive_files = files),
     )]
     if hasattr(java_common, "JavaRuntimeClasspathInfo"):
-        providers.append(java_common.JavaRuntimeClasspathInfo(runtime_classpath = inputs))
+        providers.append(java_common.JavaRuntimeClasspathInfo(runtime_classpath = all_inputs))
     return providers
 
 bazel_java_single_jar = rule(

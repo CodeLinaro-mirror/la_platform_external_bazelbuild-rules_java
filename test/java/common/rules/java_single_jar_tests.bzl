@@ -3,6 +3,8 @@
 load("@rules_testing//lib:analysis_test.bzl", "analysis_test", "test_suite")
 load("@rules_testing//lib:truth.bzl", "matching")
 load("@rules_testing//lib:util.bzl", "util")
+load("//java:java_binary.bzl", "java_binary")
+load("//java:java_library.bzl", "java_library")
 load("//java:java_single_jar.bzl", "java_single_jar")
 load("//java/common:java_semantics.bzl", "semantics")
 
@@ -155,15 +157,131 @@ def _test_java_single_jar_stamp_attr_auto_stamp_flag_disabled_impl(env, targets)
         for f in targets.build_info[OutputGroupInfo].redacted_build_info_files.to_list()
     ])
 
+def _test_java_single_jar_deploy_manifest_lines(name):
+    util.helper_target(
+        java_single_jar,
+        name = name + "/jar",
+        deps = ["1.jar"],
+        deploy_manifest_lines = [
+            "Manifest-Entry-A: valueA",
+            "Manifest-Entry-B: line1,\n line2",
+        ],
+    )
+
+    analysis_test(
+        name = name,
+        impl = _test_java_single_jar_deploy_manifest_lines_impl,
+        target = name + "/jar",
+    )
+
+def _test_java_single_jar_deploy_manifest_lines_impl(env, target):
+    assert_that_action = env.expect.that_target(target).action_named("JavaSingleJar")
+    assert_that_action.argv().contains_at_least([
+        "--deploy_manifest_lines",
+        "Manifest-Entry-A: valueA",
+        "Manifest-Entry-B: line1,\n line2",
+    ])
+
+def _test_java_single_jar_transitive_deploy_env(name):
+    util.helper_target(
+        java_library,
+        name = name + "_lib_a",
+        srcs = ["A.java"],
+    )
+    util.helper_target(
+        java_library,
+        name = name + "_lib_b",
+        srcs = ["B.java"],
+    )
+    util.helper_target(
+        java_library,
+        name = name + "_lib_c",
+        srcs = ["C.java"],
+    )
+    util.helper_target(
+        java_single_jar,
+        name = name + "_env1",
+        deps = [name + "_lib_a"],
+    )
+    util.helper_target(
+        java_single_jar,
+        name = name + "_inner",
+        deps = [name + "_lib_a", name + "_lib_b"],
+        deploy_env = [name + "_env1"],
+    )
+    util.helper_target(
+        java_single_jar,
+        name = name + "_outer",
+        deps = [name + "_lib_a", name + "_lib_b", name + "_lib_c"],
+        deploy_env = [name + "_inner"],
+    )
+
+    analysis_test(
+        name = name,
+        impl = _test_java_single_jar_transitive_deploy_env_impl,
+        target = name + "_outer",
+    )
+
+def _test_java_single_jar_transitive_deploy_env_impl(env, target):
+    assert_that_action = env.expect.that_target(target).action_named("JavaSingleJar")
+    assert_that_action.argv().contains_at_least([
+        "--sources",
+        "{bindir}/{package}/lib{test_name}_lib_c.jar",
+        "--output",
+    ])
+    assert_that_action.argv().not_contains("{bindir}/{package}/lib{test_name}_lib_a.jar")
+    assert_that_action.argv().not_contains("{bindir}/{package}/lib{test_name}_lib_b.jar")
+
+def _test_java_binary_deploy_env_with_java_single_jar(name):
+    util.helper_target(
+        java_library,
+        name = name + "_lib_a",
+        srcs = ["A.java"],
+    )
+    util.helper_target(
+        java_library,
+        name = name + "_lib_b",
+        srcs = ["B.java"],
+    )
+    util.helper_target(
+        java_single_jar,
+        name = name + "_single_jar",
+        deps = [name + "_lib_a"],
+    )
+    util.helper_target(
+        java_binary,
+        name = name + "_bin",
+        main_class = "Main",
+        runtime_deps = [name + "_lib_a", name + "_lib_b"],
+        deploy_env = [name + "_single_jar"],
+    )
+
+    analysis_test(
+        name = name,
+        attr_values = {"tags": ["min_bazel_8"]},  # the deploy jar was created by a separate rule in Bazel 7
+        impl = _test_java_binary_deploy_env_with_java_single_jar_impl,
+        target = name + "_bin",
+    )
+
+def _test_java_binary_deploy_env_with_java_single_jar_impl(env, target):
+    assert_that_action = env.expect.that_target(target).action_named("JavaDeployJar")
+    assert_that_action.inputs().contains_at_least([
+        "{package}/lib{test_name}_lib_b.jar",
+    ])
+    assert_that_action.inputs().not_contains("{package}/lib{test_name}_lib_a.jar")
+
 def java_single_jar_tests(name):
     test_suite(
         name = name,
         tests = [
             _test_java_single_jar_basic,
+            _test_java_single_jar_deploy_manifest_lines,
             _test_java_single_jar_force_enable_stamping,
             _test_java_single_jar_force_disable_stamping,
             _test_java_single_jar_stamping_enabled_build_data_excluded_fails,
             _test_java_single_jar_stamp_attr_auto_stamp_flag_enabled,
             _test_java_single_jar_stamp_attr_auto_stamp_flag_disabled,
+            _test_java_single_jar_transitive_deploy_env,
+            _test_java_binary_deploy_env_with_java_single_jar,
         ],
     )
