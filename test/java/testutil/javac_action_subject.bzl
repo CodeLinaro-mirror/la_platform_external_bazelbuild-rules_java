@@ -44,6 +44,7 @@ def _new_javac_action_subject(env, target, output = None, desc = ""):
         argv = action_subject.argv,
         mnemonic = action_subject.mnemonic,
         native_header_output = lambda: _create_subject_for_flag("--native_header_output", self.parsed_flags, self.meta),
+        fix_deps_tool = lambda: _create_subject_for_flag("--experimental_fix_deps_tool", self.parsed_flags, self.meta).offset(0, factory = subjects.str),
     )
     return public
 
