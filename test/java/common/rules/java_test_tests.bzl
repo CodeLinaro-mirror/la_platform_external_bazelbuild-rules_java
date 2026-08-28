@@ -212,7 +212,7 @@ def _test_stamp_values_impl(env, targets):
 def _test_mac_requires_darwin_for_execution(name):
     util.helper_target(
         rule = native.platform,
-        name = name + "/darwin_x86_64",
+        name = name + "_darwin_x86_64",
         constraint_values = [
             "@platforms//os:macos",
             "@platforms//cpu:x86_64",
@@ -244,7 +244,7 @@ def _test_mac_requires_darwin_for_execution(name):
         name = name,
         target = name + "/test",
         config_settings = {
-            "//command_line_option:platforms": [Label(name + "/darwin_x86_64")],
+            "//command_line_option:platforms": [Label(name + "_darwin_x86_64")],
             "//command_line_option:extra_toolchains": toolchains,
         },
         impl = _test_mac_requires_darwin_for_execution_impl,

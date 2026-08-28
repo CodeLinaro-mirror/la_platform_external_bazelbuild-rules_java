@@ -16,7 +16,7 @@ def _test_java_binary_cross_compilation_to_unix(name):
     # - is not supported by the default C++ toolchain
     util.helper_target(
         native.platform,
-        name = name + "/platform",
+        name = name + "_platform",
         constraint_values = [
             "@platforms//os:linux",
             "@platforms//cpu:s390x",
@@ -35,7 +35,7 @@ def _test_java_binary_cross_compilation_to_unix(name):
         impl = _test_java_binary_cross_compilation_to_unix_impl,
         target = name + "/bin",
         config_settings = {
-            "//command_line_option:platforms": [Label(name + "/platform")],
+            "//command_line_option:platforms": [Label(name + "_platform")],
         },
         # Requires the launcher_maker toolchain.
         attr_values = {"tags": ["min_bazel_9"]},
