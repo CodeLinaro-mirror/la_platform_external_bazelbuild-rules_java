@@ -512,6 +512,32 @@ def _test_java_binary_jdeps_impl(env, target):
         ("--output_deps_proto", "{bindir}/{package}/{name}.jdeps"),
     ])
 
+def _test_java_binary_deps_without_srcs(name):
+    util.helper_target(
+        java_binary,
+        name = name + "/a",
+        srcs = [],
+        deps = [name + "/b"],
+        main_class = "B",
+    )
+    util.helper_target(
+        java_library,
+        name = name + "/b",
+        srcs = ["B.java"],
+    )
+
+    analysis_test(
+        name = name,
+        impl = _test_java_binary_deps_without_srcs_impl,
+        target = name + "/a",
+        expect_failure = True,
+    )
+
+def _test_java_binary_deps_without_srcs_impl(env, target):
+    env.expect.that_target(target).failures().contains_predicate(
+        matching.str_matches("deps not allowed without srcs"),
+    )
+
 def java_binary_tests(name):
     test_suite(
         name = name,
@@ -530,5 +556,6 @@ def java_binary_tests(name):
             _test_java_binary_rule_in_sub_directory,
             _test_java_binary_duplicate_classpath_resources,
             _test_java_binary_jdeps,
+            _test_java_binary_deps_without_srcs,
         ],
     )
