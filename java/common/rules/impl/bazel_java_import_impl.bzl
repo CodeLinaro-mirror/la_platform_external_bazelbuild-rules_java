@@ -115,16 +115,23 @@ def bazel_java_import_rule(
     collected_jars = _collect_jars(ctx, jars)
     all_deps = _filter_provider(JavaInfo, deps, exports)
 
-    jdeps_artifact = None
     merged_java_info = java_common.merge(all_deps)
-    if not skip_incomplete_deps_check and "incomplete-deps" not in ctx.attr.tags:
-        jdeps_artifact = import_deps_check(
-            ctx,
-            collected_jars,
-            merged_java_info.compile_jars,
-            merged_java_info.transitive_compile_time_jars,
-            "java_import",
-        )
+
+    # import_deps_check is always run to generate the jdeps proto for downstream compile actions,
+    # but may be silenced.
+    has_incomplete_deps = "incomplete-deps" in ctx.attr.tags
+    if skip_incomplete_deps_check or has_incomplete_deps:
+        checking_mode = "silence"
+    else:
+        checking_mode = "error"
+    jdeps_artifact = import_deps_check(
+        ctx,
+        collected_jars,
+        merged_java_info.compile_jars,
+        merged_java_info.transitive_compile_time_jars,
+        "java_import",
+        checking_mode = checking_mode,
+    )
 
     compilation_to_runtime_jar_map = _process_with_ijars_if_needed(collected_jars, ctx)
     runtime_deps_list = [runtime_dep[JavaInfo] for runtime_dep in runtime_deps if JavaInfo in runtime_dep]
@@ -134,6 +141,7 @@ def bazel_java_import_rule(
         java_infos.append(JavaInfo(
             output_jar = jar,
             compile_jar = compilation_to_runtime_jar_map[jar],
+            compile_jdeps = jdeps_artifact,
             deps = all_deps,
             runtime_deps = runtime_deps_list,
             neverlink = neverlink,
@@ -169,7 +177,7 @@ def bazel_java_import_rule(
     output_group_src_jars = depset() if srcjar == None else depset([srcjar])
 
     validation_group = []
-    if jdeps_artifact != None:
+    if jdeps_artifact != None and checking_mode != "silence":
         validation_group.append(jdeps_artifact)
     if srcjar != None:
         validation_group.append(srcjar)

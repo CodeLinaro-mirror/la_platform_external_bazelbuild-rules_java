@@ -31,8 +31,9 @@ def _new_java_info_subject(java_info, meta):
     )
     return public
 
-def _java_info_subject_from_target(env, target):
+def _java_info_subject_from_target(env, target, expr = None):
     return _new_java_info_subject(target[JavaInfo], meta = truth.expect(env).meta.derive(
+        expr = expr,
         format_str_kwargs = {
             "name": target.label.name,
             "package": target.label.package,
