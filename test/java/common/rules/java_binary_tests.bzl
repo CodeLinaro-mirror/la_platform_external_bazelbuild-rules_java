@@ -538,6 +538,72 @@ def _test_java_binary_deps_without_srcs_impl(env, target):
         matching.str_matches("deps not allowed without srcs"),
     )
 
+def _test_java_binary_srcs_filetypes(name):
+    util.helper_target(
+        java_binary,
+        name = name + "/valid",
+        srcs = [
+            "a.java",
+            name + "/gmix",
+            name + "/gvalid",
+        ],
+    )
+    util.helper_target(
+        java_binary,
+        name = name + "/invalid",
+        srcs = [
+            "a.foo",
+            name + "/ginvalid",
+        ],
+    )
+    util.helper_target(
+        java_binary,
+        name = name + "/mix",
+        srcs = [
+            "a.foo",
+            "a.java",
+        ],
+    )
+    util.helper_target(
+        native.genrule,
+        name = name + "/gvalid",
+        outs = [name + "/b.java"],
+        cmd = "",
+    )
+    util.helper_target(
+        native.genrule,
+        name = name + "/ginvalid",
+        outs = [name + "/b.foo"],
+        cmd = "",
+    )
+    util.helper_target(
+        native.genrule,
+        name = name + "/gmix",
+        outs = [name + "/c.java", name + "/c.foo"],
+        cmd = "",
+    )
+
+    analysis_test(
+        name = name,
+        impl = _test_java_binary_srcs_filetypes_impl,
+        targets = {
+            "valid": name + "/valid",
+            "invalid": name + "/invalid",
+            "mix": name + "/mix",
+        },
+        expect_failure = True,
+    )
+
+def _test_java_binary_srcs_filetypes_impl(env, targets):
+    env.expect.that_target(targets.valid).failures().contains_exactly([])
+    env.expect.that_target(targets.invalid).failures().contains_at_least_predicates([
+        matching.str_matches("'*/ginvalid' does not produce any java_binary srcs files"),
+        matching.str_matches("source file '*:a.foo' is misplaced here"),
+    ])
+    env.expect.that_target(targets.mix).failures().contains_at_least_predicates([
+        matching.str_matches("'*:a.foo' does not produce any java_binary srcs files"),
+    ])
+
 def java_binary_tests(name):
     test_suite(
         name = name,
@@ -557,5 +623,6 @@ def java_binary_tests(name):
             _test_java_binary_duplicate_classpath_resources,
             _test_java_binary_jdeps,
             _test_java_binary_deps_without_srcs,
+            _test_java_binary_srcs_filetypes,
         ],
     )
