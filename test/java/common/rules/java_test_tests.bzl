@@ -396,6 +396,72 @@ def _test_one_version_check_disabled_for_java_test_impl(env, targets):
     env.expect.that_collection(binary_action_mnemonics).contains("JavaOneVersion")
     env.expect.that_collection(test_action_mnemonics).not_contains("JavaOneVersion")
 
+def _test_java_test_srcs_filetypes(name):
+    util.helper_target(
+        java_test,
+        name = name + "/valid",
+        srcs = [
+            "a.java",
+            name + "/gmix",
+            name + "/gvalid",
+        ],
+    )
+    util.helper_target(
+        java_test,
+        name = name + "/invalid",
+        srcs = [
+            "a.foo",
+            name + "/ginvalid",
+        ],
+    )
+    util.helper_target(
+        java_test,
+        name = name + "/mix",
+        srcs = [
+            "a.foo",
+            "a.java",
+        ],
+    )
+    util.helper_target(
+        native.genrule,
+        name = name + "/gvalid",
+        outs = [name + "/b.java"],
+        cmd = "",
+    )
+    util.helper_target(
+        native.genrule,
+        name = name + "/ginvalid",
+        outs = [name + "/b.foo"],
+        cmd = "",
+    )
+    util.helper_target(
+        native.genrule,
+        name = name + "/gmix",
+        outs = [name + "/c.java", name + "/c.foo"],
+        cmd = "",
+    )
+
+    analysis_test(
+        name = name,
+        impl = _test_java_test_srcs_filetypes_impl,
+        targets = {
+            "valid": name + "/valid",
+            "invalid": name + "/invalid",
+            "mix": name + "/mix",
+        },
+        expect_failure = True,
+    )
+
+def _test_java_test_srcs_filetypes_impl(env, targets):
+    env.expect.that_target(targets.valid).failures().contains_exactly([])
+    env.expect.that_target(targets.invalid).failures().contains_at_least_predicates([
+        matching.str_matches("'*/ginvalid' does not produce any java_test srcs files"),
+        matching.str_matches("source file '*:a.foo' is misplaced here"),
+    ])
+    env.expect.that_target(targets.mix).failures().contains_at_least_predicates([
+        matching.str_matches("'*:a.foo' does not produce any java_test srcs files"),
+    ])
+
 def java_test_tests(name):
     test_suite(
         name = name,
@@ -409,5 +475,6 @@ def java_test_tests(name):
             _test_java_test_sets_securiry_manager_property_jdk17,
             _test_one_version_check_java_test,
             _test_one_version_check_disabled_for_java_test,
+            _test_java_test_srcs_filetypes,
         ],
     )
