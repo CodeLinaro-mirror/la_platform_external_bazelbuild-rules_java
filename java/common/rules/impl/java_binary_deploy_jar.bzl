@@ -19,6 +19,9 @@ load(":java_helper.bzl", "helper")
 
 # copybara: default visibility
 
+def _map_hermetic_resource(f):
+    return "%s:%s" % (f.path, f.short_path)
+
 def create_deploy_archives(
         ctx,
         java_attrs,
@@ -208,13 +211,17 @@ def create_deploy_archive(
     if hermetic:
         runtime = ctx.toolchains["@//tools/jdk/hermetic:hermetic_runtime_toolchain_type"].java_runtime
         if runtime.lib_modules != None:
-            java_home = runtime.java_home
+            java_home = runtime.java_home_runfiles_path
             lib_modules = runtime.lib_modules
             hermetic_files = runtime.hermetic_files
             default_cds = runtime.default_cds
             args.add("--hermetic_java_home", java_home)
             args.add("--jdk_lib_modules", lib_modules)
-            args.add_all("--resources", hermetic_files)
+            args.add_all(
+                "--resources",
+                hermetic_files,
+                map_each = _map_hermetic_resource,
+            )
             input_files.append(lib_modules)
             transitive_input_files.append(hermetic_files)
             if default_cds:
@@ -234,6 +241,9 @@ def create_deploy_archive(
         tools = [single_jar],
         outputs = [output],
         arguments = [args] + extra_args,
+        execution_requirements = {
+            "supports-path-mapping": "1",
+        },
         use_default_shell_env = True,
         toolchain = semantics.JAVA_TOOLCHAIN_TYPE,
     )
